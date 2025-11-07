@@ -4,9 +4,8 @@ Celery tasks para detección de tendencias
 import logging
 from datetime import datetime, timedelta
 from typing import Dict, List
-from collections import Counter
-from sqlalchemy.orm import Session
 from sqlalchemy import text
+from sqlalchemy.orm import Session  # <-- AGREGAR ESTE IMPORT
 
 from app.core.celery_app import celery_app
 from app.db.session import SessionLocal
@@ -199,3 +198,95 @@ def get_available_sectors(db: Session) -> List[str]:
         logger.warning(f"No se pudieron obtener sectores: {e}")
     
     return []
+
+
+def detect_trends_for_sector(
+    db: Session,
+    sector: str,
+    days_back: int = 30,
+    min_frequency: int = 3
+) -> List[Dict[str, any]]:
+    """
+    Detectar tendencias emergentes en un sector específico
+    """
+    try:
+        logger.info(f"Detectando tendencias para sector: {sector}")
+        
+        # Obtener período con timezone-aware datetime
+        from datetime import timezone
+        period_end = datetime.now(timezone.utc)
+        period_start = period_end - timedelta(days=days_back)
+        
+        logger.debug(f"Período: {period_start} a {period_end}")
+        
+        # Obtener keywords del sector
+        query = text("""
+            SELECT keywords, created_at
+            FROM text_summary
+            WHERE created_at >= :period_start
+            AND created_at <= :period_end
+            ORDER BY created_at
+        """)
+        
+        result = db.execute(query, {
+            "period_start": period_start,
+            "period_end": period_end
+        })
+        data = [{"keywords": row[0], "created_at": row[1]} for row in result.fetchall()]
+        
+        if not data:
+            logger.info(f"No se encontraron datos para el sector {sector} en el período dado")
+            return []
+        
+        # Agrupar por día y contar frecuencias
+        daily_trends = {}
+        
+        for entry in data:
+            date_key = entry["created_at"].date()
+            keywords = entry["keywords"]
+            
+            if date_key not in daily_trends:
+                daily_trends[date_key] = {}
+            
+            for keyword in keywords:
+                if keyword not in daily_trends[date_key]:
+                    daily_trends[date_key][keyword] = 0
+                daily_trends[date_key][keyword] += 1
+        
+        # Filtrar tendencias por frecuencia mínima
+        filtered_trends = {
+            date: {kw: count for kw, count in trends.items() if count >= min_frequency}
+            for date, trends in daily_trends.items()
+        }
+        
+        # Ordenar tendencias por fecha y frecuencia
+        sorted_trends = sorted(
+            ((date, kw, count) for date, trends in filtered_trends.items() for kw, count in trends.items()),
+            key=lambda x: (x[0], -x[2])
+        )
+        
+        # Limitar a las principales 10 tendencias por día
+        from collections import defaultdict
+        
+        top_trends = defaultdict(list)
+        
+        for date, kw, count in sorted_trends:
+            if len(top_trends[date]) < 10:
+                top_trends[date].append({"keyword": kw, "count": count})
+        
+        # Convertir a lista final
+        final_trends = []
+        
+        for date, trends in top_trends.items():
+            final_trends.append({
+                "date": date,
+                "trends": trends
+            })
+        
+        logger.info(f"Tendencias detectadas para el sector {sector}: {len(final_trends)} entradas")
+        
+        return final_trends
+    
+    except Exception as e:
+        logger.error(f"Error detectando tendencias para el sector {sector}: {e}")
+        raise

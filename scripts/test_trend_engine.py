@@ -33,15 +33,15 @@ def test_trend_engine():
     db = SessionLocal()
     
     query = text("""
-        SELECT 
+        SELECT
             sector,
             term,
             frequency,
             ROUND(delta_pct::numeric, 2) as delta,
-            trend_status,
-            detected_at
+            status,
+            period_start
         FROM trend_signals
-        ORDER BY detected_at DESC, ABS(delta_pct) DESC
+        ORDER BY period_start DESC, ABS(delta_pct) DESC
         LIMIT 10
     """)
     
@@ -50,8 +50,7 @@ def test_trend_engine():
     if rows:
         print(f'\nEncontradas {len(rows)} tendencias en la base de datos:')
         for row in rows:
-            status_icon = '↗' if row[4] == 'rising' else '↘'
-            print(f'  {status_icon} {row[1]} ({row[0]}): {row[3]}% - freq: {row[2]}')
+            print(f'  - {row[0]}: {row[1]} (freq={row[2]}, delta={row[3]}, status={row[4]})')
     else:
         print('\nNo se encontraron tendencias en la base de datos')
     

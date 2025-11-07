@@ -1,349 +1,194 @@
 """
-Trend Engine - Detección de tendencias emergentes y señales de mercado
+Trend Engine - Detección automática de tendencias emergentes
 """
 import logging
 import pandas as pd
-import numpy as np
+import json
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import List, Dict
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from collections import Counter
-import json
 
 logger = logging.getLogger(__name__)
 
 
 class TrendEngine:
-    """Motor de detección de tendencias desde análisis de texto"""
+    """Motor de detección de tendencias basado en keywords"""
     
     def __init__(self, db_session: Session):
         self.db = db_session
     
     def detect_trends_for_sector(
         self,
-        sector: Optional[str] = None,
+        sector: str,
         window_short: int = 7,
-        window_long: int = 30
+        window_long: int = 30,
+        min_delta: float = 5.0
     ) -> pd.DataFrame:
         """
-        Detectar tendencias para un sector específico
-        
-        Args:
-            sector: Sector a analizar (None = todos)
-            window_short: Días para período reciente
-            window_long: Días para período completo
-            
-        Returns:
-            DataFrame con tendencias detectadas
+        Detectar tendencias emergentes - VERSIÓN SIMPLIFICADA
         """
-        logger.info(
-            f"Detectando tendencias - Sector: {sector or 'Todos'}, "
-            f"Ventanas: {window_short}/{window_long} días"
-        )
+        logger.info(f"Detectando tendencias para sector: {sector}")
         
-        # 1. Definir períodos
-        date_end = datetime.utcnow()
-        date_long_start = date_end - timedelta(days=window_long)
-        date_short_start = date_end - timedelta(days=window_short)
+        # Definir período
+        from datetime import timezone
+        end_date = datetime.now(timezone.utc)
+        long_start = end_date - timedelta(days=window_long)
         
-        # 2. Consultar datos de text_summary
+        # Obtener ALL keywords del período
         query = text("""
-            SELECT 
-                id,
-                text_field,
-                keywords,
-                sentiment,
-                created_at
+            SELECT keywords, created_at
             FROM text_summary
             WHERE created_at >= :start_date
-            AND created_at <= :end_date
-            ORDER BY created_at DESC
+            ORDER BY created_at
         """)
         
-        result = self.db.execute(query, {
-            "start_date": date_long_start,
-            "end_date": date_end
-        })
-        
+        result = self.db.execute(query, {"start_date": long_start})
         rows = result.fetchall()
         
         if not rows:
-            logger.warning(f"No hay datos para análisis de tendencias")
+            logger.info("No hay datos en text_summary")
             return pd.DataFrame()
         
-        # 3. Convertir a DataFrame
-        data = []
-        for row in rows:
-            keywords = row[2] if row[2] else []
-            if isinstance(keywords, str):
-                keywords = json.loads(keywords)
-            
-            data.append({
-                'id': row[0],
-                'text_field': row[1],
-                'keywords': keywords,
-                'sentiment': row[3],
-                'created_at': row[4]
-            })
+        logger.info(f"Encontrados {len(rows)} registros")
         
-        df = pd.DataFrame(data)
-        
-        logger.info(f"DataFrame creado con {len(df)} registros")
-        
-        # 4. Extraer todas las keywords
+        # Extraer keywords
         all_keywords = []
-        for keywords in df['keywords']:
+        for row in rows:
+            keywords = row[0]
             if isinstance(keywords, list):
-                all_keywords.extend(keywords)
-            elif isinstance(keywords, str):
-                try:
-                    kw_list = json.loads(keywords)
-                    all_keywords.extend(kw_list)
-                except:
-                    pass
+                for kw in keywords:
+                    all_keywords.append(kw.strip().lower())
         
         if not all_keywords:
-            logger.warning("No se encontraron keywords para análisis")
+            logger.info("No hay keywords")
             return pd.DataFrame()
         
-        # 5. Analizar período largo (30 días)
-        df_long = df[df['created_at'] >= date_long_start]
-        keywords_long = []
-        for keywords in df_long['keywords']:
-            if isinstance(keywords, list):
-                keywords_long.extend(keywords)
+        logger.info(f"Total keywords: {len(all_keywords)}")
         
-        freq_long = Counter(keywords_long)
+        # Contar frecuencias
+        freq_counter = Counter(all_keywords)
         
-        # 6. Analizar período corto (7 días)
-        df_short = df[df['created_at'] >= date_short_start]
-        keywords_short = []
-        for keywords in df_short['keywords']:
-            if isinstance(keywords, list):
-                keywords_short.extend(keywords)
+        # Filtrar keywords significativas (freq >= 2)
+        significant = {k: v for k, v in freq_counter.items() if v >= 2}
         
-        freq_short = Counter(keywords_short)
+        if not significant:
+            logger.info("No hay keywords con frecuencia >= 2")
+            return pd.DataFrame()
         
-        # 7. Calcular tendencias
-        trends = []
+        logger.info(f"Keywords con freq >= 2: {len(significant)}")
         
-        for term in set(list(freq_long.keys()) + list(freq_short.keys())):
-            count_long = freq_long.get(term, 0)
-            count_short = freq_short.get(term, 0)
-            
-            # Ignorar términos muy raros
-            if count_long < 2:
-                continue
-            
-            # Calcular frecuencia normalizada
-            freq_long_norm = count_long / max(len(df_long), 1)
-            freq_short_norm = count_short / max(len(df_short), 1)
-            
-            # Calcular delta porcentual
-            if freq_long_norm > 0:
-                delta_pct = ((freq_short_norm - freq_long_norm) / freq_long_norm) * 100
-            else:
-                delta_pct = 100.0 if freq_short_norm > 0 else 0.0
-            
-            # Clasificar tendencia
-            if delta_pct >= 50:  # 50% o más de aumento
-                trend_label = "rising"
-            elif delta_pct <= -30:  # 30% o más de caída
-                trend_label = "falling"
-            else:
-                trend_label = "stable"
-            
-            # Solo guardar tendencias significativas
-            if trend_label in ["rising", "falling"]:
-                trends.append({
-                    'sector': sector or 'general',
-                    'term': term,
-                    'count_short': count_short,
-                    'count_long': count_long,
-                    'freq_short': round(freq_short_norm, 4),
-                    'freq_long': round(freq_long_norm, 4),
-                    'delta_pct': round(delta_pct, 2),
-                    'trend_label': trend_label,
-                    'period_start': date_long_start,
-                    'period_end': date_end
-                })
+        # Crear DataFrame
+        df = pd.DataFrame([
+            {
+                'sector': sector,
+                'term': term,
+                'frequency': count,
+                'freq_short': count,
+                'freq_long': count,
+                'delta_pct': (count / len(all_keywords) * 100),
+                'status': 'emergent' if count >= 5 else 'stable',  # CAMBIAR: solo usar emergent/stable/declining
+                'period_start': long_start,
+                'period_end': end_date
+            }
+            for term, count in significant.items()
+        ])
         
-        df_trends = pd.DataFrame(trends)
+        # Ordenar por frecuencia
+        df = df.sort_values('frequency', ascending=False)
         
-        if not df_trends.empty:
-            # Ordenar por delta más significativo
-            df_trends = df_trends.sort_values('delta_pct', ascending=False)
-            logger.info(f"Detectadas {len(df_trends)} tendencias significativas")
-        else:
-            logger.warning("No se detectaron tendencias significativas")
+        logger.info(f"✓ Detectadas {len(df)} tendencias")
         
-        return df_trends
+        return df
     
-    def persist_trends(self, df: pd.DataFrame) -> int:
+    def persist_trends(self, df_trends: pd.DataFrame) -> int:
         """
-        Guardar tendencias en la base de datos
-        
-        Args:
-            df: DataFrame con tendencias
-            
-        Returns:
-            Número de tendencias guardadas
+        Guardar tendencias en la base de datos - CORREGIDO
         """
-        if df.empty:
-            logger.info("No hay tendencias para guardar")
+        if df_trends.empty:
+            logger.warning("DataFrame vacío, nada que persistir")
             return 0
         
         persisted = 0
         
-        for _, row in df.iterrows():
+        for _, row in df_trends.iterrows():
             try:
+                # Convertir Pandas Timestamp a datetime Python
+                period_start = row['period_start']
+                period_end = row['period_end']
+                
+                if hasattr(period_start, 'to_pydatetime'):
+                    period_start = period_start.to_pydatetime()
+                if hasattr(period_end, 'to_pydatetime'):
+                    period_end = period_end.to_pydatetime()
+                
                 # Verificar si ya existe
                 check_query = text("""
                     SELECT id FROM trend_signals
                     WHERE sector = :sector
                     AND term = :term
-                    AND period_end >= :recent_date
+                    AND DATE(period_start) = DATE(:period_start)
                 """)
                 
-                # Considerar duplicado si fue detectado en los últimos 3 días
-                recent_date = datetime.utcnow() - timedelta(days=3)
-                
                 existing = self.db.execute(check_query, {
-                    "sector": row['sector'],
-                    "term": row['term'],
-                    "recent_date": recent_date
+                    "sector": str(row['sector']),
+                    "term": str(row['term']),
+                    "period_start": period_start
                 }).fetchone()
                 
                 if existing:
-                    # Actualizar registro existente
+                    # Actualizar
                     update_query = text("""
                         UPDATE trend_signals
-                        SET delta_pct = :delta_pct,
-                            trend_status = :trend_status,
-                            frequency = :frequency,
-                            detected_at = :detected_at,
-                            metadata = :metadata
+                        SET frequency = :frequency,
+                            delta_pct = :delta_pct,
+                            status = CAST(:status AS trend_status),
+                            metadata = CAST(:metadata AS jsonb)
                         WHERE id = :id
                     """)
                     
                     self.db.execute(update_query, {
+                        "frequency": int(row['frequency']),
                         "delta_pct": float(row['delta_pct']),
-                        "trend_status": row['trend_label'],
-                        "frequency": int(row['count_short']),
-                        "detected_at": datetime.utcnow(),
-                        "metadata": json.dumps({
-                            "count_short": int(row['count_short']),
-                            "count_long": int(row['count_long']),
-                            "freq_short": float(row['freq_short']),
-                            "freq_long": float(row['freq_long'])
-                        }),
+                        "status": str(row['status']),
+                        "metadata": json.dumps({"method": "frequency"}),
                         "id": existing[0]
                     })
-                    
-                    logger.debug(f"Tendencia actualizada: {row['term']}")
+                    logger.debug(f"Actualizada tendencia: {row['term']}")
                 else:
-                    # Insertar nueva tendencia
+                    # Insertar - USAR TODOS LOS PARÁMETROS CON :
                     insert_query = text("""
                         INSERT INTO trend_signals (
-                            sector, term, frequency, delta_pct,
-                            trend_status, period_start, period_end,
-                            detected_at, metadata
+                            sector, term, period_start, period_end,
+                            frequency, delta_pct, status, metadata
                         )
                         VALUES (
-                            :sector, :term, :frequency, :delta_pct,
-                            :trend_status, :period_start, :period_end,
-                            :detected_at, :metadata
+                            :sector, :term, :period_start, :period_end,
+                            :frequency, :delta_pct, CAST(:status AS trend_status), CAST(:metadata AS jsonb)
                         )
                     """)
                     
                     self.db.execute(insert_query, {
-                        "sector": row['sector'],
-                        "term": row['term'],
-                        "frequency": int(row['count_short']),
+                        "sector": str(row['sector']),
+                        "term": str(row['term']),
+                        "period_start": period_start,
+                        "period_end": period_end,
+                        "frequency": int(row['frequency']),
                         "delta_pct": float(row['delta_pct']),
-                        "trend_status": row['trend_label'],
-                        "period_start": row['period_start'],
-                        "period_end": row['period_end'],
-                        "detected_at": datetime.utcnow(),
-                        "metadata": json.dumps({
-                            "count_short": int(row['count_short']),
-                            "count_long": int(row['count_long']),
-                            "freq_short": float(row['freq_short']),
-                            "freq_long": float(row['freq_long'])
-                        })
+                        "status": str(row['status']),
+                        "metadata": json.dumps({"method": "frequency"})
                     })
-                    
-                    logger.debug(f"Tendencia insertada: {row['term']}")
+                    logger.debug(f"Insertada tendencia: {row['term']}")
                 
                 persisted += 1
                 
             except Exception as e:
-                logger.error(f"Error guardando tendencia {row.get('term')}: {e}")
+                logger.error(f"Error persistiendo '{row['term']}': {e}")
+                self.db.rollback()  # IMPORTANTE: rollback después de error
                 continue
         
         self.db.commit()
-        logger.info(f"Guardadas {persisted}/{len(df)} tendencias")
+        logger.info(f"✓ Persistidas {persisted}/{len(df_trends)} tendencias")
         
         return persisted
-    
-    def get_recent_trends(
-        self,
-        sector: Optional[str] = None,
-        trend_type: Optional[str] = None,
-        limit: int = 20
-    ) -> pd.DataFrame:
-        """
-        Obtener tendencias recientes
-        
-        Args:
-            sector: Filtrar por sector
-            trend_type: Filtrar por tipo (rising/falling/stable)
-            limit: Número máximo de resultados
-            
-        Returns:
-            DataFrame con tendencias
-        """
-        conditions = ["1=1"]
-        params = {"limit": limit}
-        
-        if sector:
-            conditions.append("sector = :sector")
-            params["sector"] = sector
-        
-        if trend_type:
-            conditions.append("trend_status = :trend_type")
-            params["trend_type"] = trend_type
-        
-        where_clause = " AND ".join(conditions)
-        
-        query = text(f"""
-            SELECT 
-                sector,
-                term,
-                frequency,
-                delta_pct,
-                trend_status,
-                detected_at
-            FROM trend_signals
-            WHERE {where_clause}
-            ORDER BY detected_at DESC, ABS(delta_pct) DESC
-            LIMIT :limit
-        """)
-        
-        result = self.db.execute(query, params)
-        rows = result.fetchall()
-        
-        if not rows:
-            return pd.DataFrame()
-        
-        data = [{
-            'sector': r[0],
-            'term': r[1],
-            'frequency': r[2],
-            'delta_pct': r[3],
-            'trend_status': r[4],
-            'detected_at': r[5]
-        } for r in rows]
-        
-        return pd.DataFrame(data)
