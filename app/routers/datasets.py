@@ -1,8 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from typing import List
 from pathlib import Path
 import shutil
+import json
 
 from app.database import get_db
 from app.models.user import User, UserRole
@@ -133,6 +135,83 @@ async def get_dataset(
         )
     
     return dataset
+
+
+@router.get("/{dataset_id}/quality-report")
+async def get_quality_report(
+    dataset_id: int,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """Obtener reporte de calidad detallado del dataset"""
+    
+    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    
+    if not dataset:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Dataset no encontrado"
+        )
+    
+    # Verificar permisos
+    if current_user.role != UserRole.ADMIN_GLOBAL and dataset.client_id != current_user.client_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tiene permisos"
+        )
+    
+    # Obtener reporte de calidad
+    if dataset.metadata and 'quality_report' in dataset.metadata:
+        return dataset.metadata['quality_report']
+    
+    # Si no hay reporte en metadata, buscar archivo
+    quality_report_path = f"dataset/processed/quality_report_{dataset_id}.json"
+    if Path(quality_report_path).exists():
+        with open(quality_report_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail="Reporte de calidad no disponible. El dataset debe ser procesado primero."
+    )
+
+
+@router.get("/{dataset_id}/quality-report/download")
+async def download_quality_report(
+    dataset_id: int,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """Descargar reporte de calidad en formato JSON"""
+    
+    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    
+    if not dataset:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Dataset no encontrado"
+        )
+    
+    # Verificar permisos
+    if current_user.role != UserRole.ADMIN_GLOBAL and dataset.client_id != current_user.client_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tiene permisos"
+        )
+    
+    quality_report_path = f"dataset/processed/quality_report_{dataset_id}.json"
+    
+    if not Path(quality_report_path).exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Reporte de calidad no encontrado"
+        )
+    
+    return FileResponse(
+        path=quality_report_path,
+        media_type="application/json",
+        filename=f"quality_report_dataset_{dataset_id}.json"
+    )
 
 
 @router.get("/{dataset_id}/etl-history", response_model=List[ETLHistoryResponse])

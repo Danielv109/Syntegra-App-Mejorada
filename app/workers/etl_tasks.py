@@ -8,6 +8,7 @@ from sqlalchemy import text
 from app.workers.celery_app import celery_app
 from app.database import SessionLocal, engine
 from app.models.dataset import Dataset, ETLHistory, DatasetStatus
+from app.services.data_quality import data_quality_validator
 from app.logger import get_logger
 
 logger = get_logger()
@@ -25,7 +26,7 @@ class ETLTask(Task):
 @celery_app.task(base=ETLTask, bind=True, name="etl.process_dataset")
 def process_dataset_task(self, dataset_id: int):
     """
-    Tarea asíncrona para procesar dataset
+    Tarea asíncrona para procesar dataset con validación completa
     """
     db = SessionLocal()
     logger.info(f"Iniciando procesamiento de dataset {dataset_id}")
@@ -64,12 +65,32 @@ def process_dataset_task(self, dataset_id: int):
         
         df_clean = clean_dataframe(df)
         
-        # Paso 3: Validación de calidad
-        logger.info("Validando calidad de datos")
-        etl_record.step = "Validando calidad"
+        # Paso 3: Validación de calidad con Great Expectations
+        logger.info("Validando calidad de datos con Great Expectations")
+        etl_record.step = "Validando calidad de datos"
         db.commit()
         
-        quality_report = validate_data_quality(df_clean)
+        # Configuración de expectativas personalizada (opcional)
+        expectations_config = {
+            'required_columns': [],  # Se puede configurar por tipo de dataset
+            'unique_columns': [],
+            'allowed_values': {},
+            'numeric_ranges': {},
+        }
+        
+        # Ejecutar validación
+        quality_report = data_quality_validator.validate_dataframe(
+            df=df_clean,
+            dataset_name=f"dataset_{dataset_id}",
+            expectations_config=expectations_config
+        )
+        
+        # Verificar si la calidad es aceptable
+        if quality_report['quality_score']['overall_score'] < 50:
+            logger.warning(
+                f"Calidad de datos baja para dataset {dataset_id}: "
+                f"{quality_report['quality_score']['overall_score']:.2f}"
+            )
         
         # Paso 4: Guardar en base de datos
         logger.info("Guardando datos procesados")
@@ -98,31 +119,45 @@ def process_dataset_task(self, dataset_id: int):
         Path(processed_path).parent.mkdir(parents=True, exist_ok=True)
         df_clean.to_parquet(processed_path)
         
+        # Paso 6: Guardar reporte de calidad
+        quality_report_path = f"dataset/processed/quality_report_{dataset_id}.json"
+        with open(quality_report_path, 'w', encoding='utf-8') as f:
+            json.dump(quality_report, f, indent=2, ensure_ascii=False)
+        
         # Actualizar metadata del dataset
         dataset.rows_count = len(df_clean)
         dataset.columns_count = len(df_clean.columns)
         dataset.status = DatasetStatus.SUCCESS
         dataset.processed_at = datetime.utcnow()
         dataset.metadata = {
-            "quality_report": quality_report,
-            "columns": list(df_clean.columns),
-            "dtypes": {col: str(dtype) for col, dtype in df_clean.dtypes.items()},
+            'quality_report': quality_report,
+            'quality_report_path': quality_report_path,
+            'columns': list(df_clean.columns),
+            'dtypes': {col: str(dtype) for col, dtype in df_clean.dtypes.items()},
         }
         
         # Actualizar ETL history
         etl_record.status = DatasetStatus.SUCCESS
         etl_record.completed_at = datetime.utcnow()
-        etl_record.message = "Procesamiento completado exitosamente"
+        etl_record.message = (
+            f"Procesamiento completado exitosamente. "
+            f"Calidad: {quality_report['quality_score']['grade']}"
+        )
         
         db.commit()
         
-        logger.info(f"Dataset {dataset_id} procesado exitosamente")
+        logger.info(
+            f"Dataset {dataset_id} procesado exitosamente. "
+            f"Score de calidad: {quality_report['quality_score']['overall_score']:.2f}"
+        )
         
         return {
             "status": "success",
             "dataset_id": dataset_id,
             "rows_processed": len(df_clean),
             "columns": list(df_clean.columns),
+            "quality_score": quality_report['quality_score'],
+            "quality_report_path": quality_report_path,
         }
         
     except Exception as e:
@@ -180,19 +215,6 @@ def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
                 pass
     
     return df
-
-
-def validate_data_quality(df: pd.DataFrame) -> dict:
-    """Validar calidad de datos"""
-    report = {
-        "total_rows": len(df),
-        "total_columns": len(df.columns),
-        "duplicates": df.duplicated().sum(),
-        "null_counts": df.isnull().sum().to_dict(),
-        "null_percentage": (df.isnull().sum() / len(df) * 100).to_dict(),
-    }
-    
-    return report
 
 
 def create_client_table(df: pd.DataFrame, schema_name: str, table_name: str):

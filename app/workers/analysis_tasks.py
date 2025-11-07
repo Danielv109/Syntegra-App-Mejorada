@@ -2,6 +2,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 from sqlalchemy import text
 from typing import List, Dict, Any
+from collections import Counter
 
 from app.workers.celery_app import celery_app
 from app.database import SessionLocal, engine
@@ -9,18 +10,30 @@ from app.models.dataset import Dataset
 from app.models.analytics import AnalyticsSummary, Trend
 from app.services.text_analysis import analyze_text_batch, generate_embedding, extract_keywords
 from app.services.ollama_service import ollama_service
+from app.services.anomaly_detection import anomaly_detector
 from app.logger import get_logger
 
 logger = get_logger()
 
 
 @celery_app.task(name="analysis.analyze_text_columns")
-def analyze_text_columns_task(dataset_id: int, text_columns: List[str]):
+def analyze_text_columns_task(
+    dataset_id: int,
+    text_columns: List[str],
+    use_ollama: bool = True,
+    extract_entities: bool = False,
+):
     """
-    Analizar columnas de texto de un dataset
+    Analizar columnas de texto de un dataset usando Ollama para sentimiento
+    
+    Args:
+        dataset_id: ID del dataset
+        text_columns: Columnas de texto a analizar
+        use_ollama: Si debe usar Ollama para análisis (True por defecto)
+        extract_entities: Si debe extraer entidades nombradas
     """
     db = SessionLocal()
-    logger.info(f"Analizando columnas de texto del dataset {dataset_id}")
+    logger.info(f"Analizando columnas de texto del dataset {dataset_id} (Ollama: {use_ollama})")
     
     try:
         dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
@@ -49,8 +62,18 @@ def analyze_text_columns_task(dataset_id: int, text_columns: List[str]):
             if not texts:
                 continue
             
-            # Analizar batch de textos
-            analysis_results = analyze_text_batch(texts[:1000])  # Limitar a 1000
+            # Limitar número de textos para análisis
+            max_texts = 1000
+            if len(texts) > max_texts:
+                logger.info(f"Limitando análisis a {max_texts} textos de {len(texts)} totales")
+                texts = texts[:max_texts]
+            
+            # Analizar batch de textos con Ollama
+            analysis_results = analyze_text_batch(
+                texts,
+                use_ollama=use_ollama,
+                extract_entities=extract_entities,
+            )
             
             # Calcular métricas agregadas
             avg_sentiment = {
@@ -59,13 +82,29 @@ def analyze_text_columns_task(dataset_id: int, text_columns: List[str]):
                 "neutral": sum(r["sentiment"]["neutral"] for r in analysis_results) / len(analysis_results),
             }
             
+            # Calcular confianza promedio
+            avg_confidence = sum(r["sentiment_confidence"] for r in analysis_results) / len(analysis_results)
+            
+            # Contar métodos usados
+            methods_used = Counter([r["sentiment_method"] for r in analysis_results])
+            
             # Extraer keywords más comunes
             all_keywords = []
             for r in analysis_results:
                 all_keywords.extend(r["keywords"])
             
-            from collections import Counter
             top_keywords = [k for k, v in Counter(all_keywords).most_common(20)]
+            
+            # Extraer entidades más comunes si están disponibles
+            top_entities = []
+            if extract_entities:
+                all_entities = []
+                for r in analysis_results:
+                    if 'entities' in r:
+                        all_entities.extend([e['text'] for e in r['entities']])
+                
+                if all_entities:
+                    top_entities = [e for e, c in Counter(all_entities).most_common(10)]
             
             # Guardar métricas
             summary = AnalyticsSummary(
@@ -77,8 +116,12 @@ def analyze_text_columns_task(dataset_id: int, text_columns: List[str]):
                 metadata={
                     "column": col,
                     "avg_sentiment": avg_sentiment,
+                    "avg_confidence": round(avg_confidence, 3),
+                    "methods_used": dict(methods_used),
                     "top_keywords": top_keywords,
+                    "top_entities": top_entities,
                     "texts_analyzed": len(texts),
+                    "ollama_enabled": use_ollama,
                 }
             )
             
@@ -86,7 +129,10 @@ def analyze_text_columns_task(dataset_id: int, text_columns: List[str]):
             results.append({
                 "column": col,
                 "avg_sentiment": avg_sentiment,
+                "avg_confidence": avg_confidence,
+                "methods_used": dict(methods_used),
                 "top_keywords": top_keywords,
+                "top_entities": top_entities,
             })
         
         db.commit()
@@ -103,9 +149,22 @@ def analyze_text_columns_task(dataset_id: int, text_columns: List[str]):
 
 
 @celery_app.task(name="analysis.calculate_kpis")
-def calculate_kpis_task(dataset_id: int, numeric_columns: List[str]):
+def calculate_kpis_task(
+    dataset_id: int, 
+    numeric_columns: List[str],
+    detect_anomalies: bool = True,
+    anomaly_method: str = 'isolation_forest',
+    contamination: float = 0.1,
+):
     """
-    Calcular KPIs de columnas numéricas
+    Calcular KPIs de columnas numéricas con detección de anomalías usando IsolationForest
+    
+    Args:
+        dataset_id: ID del dataset a analizar
+        numeric_columns: Lista de columnas numéricas
+        detect_anomalies: Si se debe detectar anomalías
+        anomaly_method: Método de detección ('isolation_forest', 'ensemble', 'multivariate', 'lof')
+        contamination: Proporción esperada de anomalías (0.0 a 0.5)
     """
     db = SessionLocal()
     logger.info(f"Calculando KPIs del dataset {dataset_id}")
@@ -122,31 +181,132 @@ def calculate_kpis_task(dataset_id: int, numeric_columns: List[str]):
         df = pd.read_sql(query, engine)
         
         results = []
+        anomaly_reports = {}
         
-        for col in numeric_columns:
-            if col not in df.columns:
-                continue
-            
+        # Filtrar columnas válidas
+        valid_columns = [col for col in numeric_columns if col in df.columns]
+        
+        if not valid_columns:
+            raise ValueError("Ninguna de las columnas especificadas existe en el dataset")
+        
+        # Calcular estadísticas para cada columna
+        for col in valid_columns:
             # Convertir a numérico
             df[col] = pd.to_numeric(df[col], errors='coerce')
             
-            # Calcular estadísticas
+            # Eliminar nulos para cálculos
+            col_data = df[col].dropna()
+            
+            if len(col_data) == 0:
+                logger.warning(f"Columna {col} no tiene datos numéricos válidos")
+                continue
+            
+            # Calcular estadísticas descriptivas
             stats = {
-                "mean": float(df[col].mean()),
-                "median": float(df[col].median()),
-                "std": float(df[col].std()),
-                "min": float(df[col].min()),
-                "max": float(df[col].max()),
-                "q25": float(df[col].quantile(0.25)),
-                "q75": float(df[col].quantile(0.75)),
+                "mean": float(col_data.mean()),
+                "median": float(col_data.median()),
+                "std": float(col_data.std()),
+                "min": float(col_data.min()),
+                "max": float(col_data.max()),
+                "q25": float(col_data.quantile(0.25)),
+                "q50": float(col_data.quantile(0.50)),
+                "q75": float(col_data.quantile(0.75)),
+                "q90": float(col_data.quantile(0.90)),
+                "q95": float(col_data.quantile(0.95)),
+                "q99": float(col_data.quantile(0.99)),
+                "iqr": float(col_data.quantile(0.75) - col_data.quantile(0.25)),
+                "cv": float(col_data.std() / col_data.mean()) if col_data.mean() != 0 else 0,
+                "skewness": float(col_data.skew()),
+                "kurtosis": float(col_data.kurtosis()),
             }
             
-            # Detectar anomalías (valores fuera de 3 desviaciones estándar)
-            mean = stats["mean"]
-            std = stats["std"]
-            anomalies = df[(df[col] < mean - 3*std) | (df[col] > mean + 3*std)][col].tolist()
+            results.append({
+                "column": col,
+                "statistics": stats,
+                "data_points": len(col_data),
+            })
+        
+        # Detección de anomalías si está habilitada
+        if detect_anomalies and len(valid_columns) > 0:
+            logger.info(f"Detectando anomalías usando método: {anomaly_method}")
             
-            # Guardar métricas
+            try:
+                if anomaly_method == 'isolation_forest':
+                    # Método principal: IsolationForest
+                    anomaly_report = anomaly_detector.detect_anomalies_isolation_forest(
+                        df=df,
+                        columns=valid_columns,
+                        contamination=contamination,
+                        n_estimators=100,
+                        random_state=42,
+                    )
+                    
+                elif anomaly_method == 'ensemble':
+                    # Ensemble de múltiples métodos
+                    anomaly_report = anomaly_detector.detect_anomalies_ensemble(
+                        df=df,
+                        columns=valid_columns,
+                        contamination=contamination,
+                    )
+                    
+                elif anomaly_method == 'multivariate':
+                    # Elliptic Envelope (multivariado Gaussiano)
+                    anomaly_report = anomaly_detector.detect_anomalies_multivariate(
+                        df=df,
+                        columns=valid_columns,
+                        contamination=contamination,
+                    )
+                    
+                elif anomaly_method == 'lof':
+                    # Local Outlier Factor
+                    anomaly_report = anomaly_detector.detect_anomalies_local_outlier_factor(
+                        df=df,
+                        columns=valid_columns,
+                        contamination=contamination,
+                    )
+                    
+                else:
+                    logger.warning(f"Método desconocido: {anomaly_method}, usando isolation_forest")
+                    anomaly_report = anomaly_detector.detect_anomalies_isolation_forest(
+                        df=df,
+                        columns=valid_columns,
+                        contamination=contamination,
+                    )
+                
+                anomaly_reports['main_report'] = anomaly_report
+                
+                # Guardar métricas de anomalías
+                anomaly_summary = AnalyticsSummary(
+                    client_id=dataset.client_id,
+                    dataset_id=dataset_id,
+                    date=datetime.utcnow().date(),
+                    metric_name="anomaly_detection",
+                    metric_value=anomaly_report['anomaly_percentage'],
+                    metadata={
+                        'method': anomaly_report['method'],
+                        'total_anomalies': anomaly_report['total_anomalies'],
+                        'contamination': contamination,
+                        'columns_analyzed': valid_columns,
+                        'severity_distribution': anomaly_report.get('severity_distribution', {}),
+                    }
+                )
+                
+                db.add(anomaly_summary)
+                
+                logger.info(
+                    f"Anomalías detectadas: {anomaly_report['total_anomalies']} "
+                    f"({anomaly_report['anomaly_percentage']}%)"
+                )
+                
+            except Exception as e:
+                logger.error(f"Error detectando anomalías: {e}")
+                anomaly_reports['error'] = str(e)
+        
+        # Guardar KPIs en base de datos
+        for result in results:
+            col = result['column']
+            stats = result['statistics']
+            
             summary = AnalyticsSummary(
                 client_id=dataset.client_id,
                 dataset_id=dataset_id,
@@ -156,21 +316,21 @@ def calculate_kpis_task(dataset_id: int, numeric_columns: List[str]):
                 metadata={
                     "column": col,
                     "statistics": stats,
-                    "anomalies_count": len(anomalies),
+                    "data_points": result['data_points'],
                 }
             )
             
             db.add(summary)
-            results.append({
-                "column": col,
-                "statistics": stats,
-                "anomalies_count": len(anomalies),
-            })
         
         db.commit()
         
         logger.info(f"KPIs calculados para dataset {dataset_id}")
-        return {"status": "success", "results": results}
+        
+        return {
+            "status": "success",
+            "kpi_results": results,
+            "anomaly_detection": anomaly_reports if detect_anomalies else None,
+        }
         
     except Exception as e:
         logger.error(f"Error calculando KPIs: {e}")
