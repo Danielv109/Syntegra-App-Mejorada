@@ -16,7 +16,8 @@ class AnalyticsSummary(Base):
     metric_name = Column(String, nullable=False, index=True)
     metric_value = Column(Float, nullable=False)
     
-    metadata = Column(JSON, nullable=True)
+    # RENOMBRAR: metadata → meta_info
+    meta_info = Column(JSON, nullable=True)
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -40,7 +41,8 @@ class Trend(Base):
     
     embedding = Column(Vector(384), nullable=True)
     
-    metadata = Column(JSON, nullable=True)
+    # RENOMBRAR: metadata → meta_info
+    meta_info = Column(JSON, nullable=True)
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 

@@ -9,8 +9,15 @@ from app.logger import get_logger
 from app.middleware.logging import ActivityLogMiddleware
 from app.middleware.rate_limit import RateLimitMiddleware
 
-# Routers
-from app.routers import auth, datasets, analysis, reports, gold_dataset, clustering, connectors
+# Routers - CAMBIAR: imports individuales para detectar errores
+from app.routers import auth
+from app.routers import datasets
+from app.routers import analysis
+from app.routers import reports
+from app.routers import gold_dataset
+from app.routers import clustering
+from app.routers import connectors
+from app.api.routes import insights_api
 
 settings = get_settings()
 logger = get_logger()
@@ -95,6 +102,7 @@ app.include_router(reports.router)
 app.include_router(gold_dataset.router)
 app.include_router(clustering.router)
 app.include_router(connectors.router)
+app.include_router(insights_api.router)  # <-- AGREGAR
 
 
 if __name__ == "__main__":

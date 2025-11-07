@@ -27,7 +27,13 @@ class Dataset(Base):
     rows_count = Column(Integer, nullable=True)
     columns_count = Column(Integer, nullable=True)
     
-    metadata = Column(JSON, nullable=True)
+    # Usar nombre diferente en Python pero mapear a "metadata" en BD
+    dataset_meta = Column("metadata", JSON, nullable=True)
+    
+    # O alternativamente usar declared_attr para evitar conflictos
+    # @declared_attr
+    # def meta_info(cls):
+    #     return Column("metadata", JSON, nullable=True)
     
     uploaded_by = Column(Integer, ForeignKey("users.id"), nullable=False)
     uploaded_at = Column(DateTime(timezone=True), server_default=func.now())
