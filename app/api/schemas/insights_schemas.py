@@ -1,5 +1,5 @@
 """
-Schemas Pydantic para endpoints de Insights
+Schemas Pydantic para endpoints de insights
 """
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
@@ -7,7 +7,7 @@ from datetime import datetime
 
 
 class InsightSummary(BaseModel):
-    """Schema para resumen de insight"""
+    """Schema para listado de insights"""
     id: int
     client_id: int
     summary_text: str
@@ -50,7 +50,7 @@ class TrendSignal(BaseModel):
     sector: str
     term: str
     frequency: int
-    delta_pct: Optional[float] = None
+    delta_pct: float
     status: str
     period_start: datetime
 
@@ -58,18 +58,21 @@ class TrendSignal(BaseModel):
 class TextAnalysisSummary(BaseModel):
     """Schema para análisis de texto"""
     sentiment: str
-    sentiment_score: Optional[float] = None
+    sentiment_score: float
     keywords: List[str]
     created_at: datetime
 
 
 class ClientInsightDetail(BaseModel):
-    """Schema para detalle completo de cliente con todos los análisis"""
+    """Schema completo con todos los datos de un cliente"""
     client_id: int
     insight: Optional[InsightDetail] = None
     kpis: List[KPISummary] = []
     trends: List[TrendSignal] = []
     text_analysis: List[TextAnalysisSummary] = []
+    
+    class Config:
+        from_attributes = True
 
 
 class GlobalStats(BaseModel):
@@ -79,16 +82,15 @@ class GlobalStats(BaseModel):
     total_kpis: int
     total_trends: int
     total_text_records: int
-    risk_distribution: Dict[str, int]
-    opportunity_distribution: Dict[str, int]
-    last_update: datetime
+    high_risk_clients: int
+    high_opportunity_clients: int
+    emergent_trends_count: int
 
 
 class SearchResult(BaseModel):
     """Schema para resultados de búsqueda"""
-    result_type: str  # "insight", "trend", "kpi"
+    type: str  # 'insight', 'trend', 'kpi'
     client_id: Optional[int] = None
-    title: str
-    description: str
+    content: str
     relevance_score: float
-    date: datetime
+    created_at: datetime
