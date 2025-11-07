@@ -1,0 +1,35 @@
+name: simple_csv
+description: Simple CSV file connector
+version: 1.0.0
+
+required_fields:
+  - url
+  - delimiter
+  - encoding
+
+optional_fields:
+  - columns
+  - skip_rows
+  - max_rows
+
+field_types:
+  url: string
+  delimiter: string
+  encoding: string
+  columns: array
+  skip_rows: integer
+  max_rows: integer
+
+defaults:
+  delimiter: ","
+  encoding: "utf-8"
+  skip_rows: 0
+
+validation_rules:
+  delimiter:
+    - type: string
+    - min_length: 1
+    - max_length: 5
+  encoding:
+    - type: string
+    - allowed_values: ["utf-8", "latin-1", "iso-8859-1"]

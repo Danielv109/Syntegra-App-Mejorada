@@ -5,6 +5,8 @@ from app.models.analytics import AnalyticsSummary, Trend, Cluster
 from app.models.report import ReportHistory
 from app.models.gold_dataset import GoldDataset
 from app.models.activity_log import ActivityLog
+from app.models.data_source import DataSource
+from app.models.processed_data import ProcessedData
 
 __all__ = [
     "User",
@@ -17,4 +19,6 @@ __all__ = [
     "ReportHistory",
     "GoldDataset",
     "ActivityLog",
+    "DataSource",
+    "ProcessedData",
 ]

@@ -11,6 +11,7 @@ celery_app = Celery(
         "app.workers.etl_tasks",
         "app.workers.analysis_tasks",
         "app.workers.report_tasks",
+        "app.workers.connector_tasks",
     ]
 )
 

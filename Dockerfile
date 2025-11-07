@@ -17,7 +17,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Descargar modelo de spaCy
-RUN python -m spacy download es_core_news_sm
+RUN python -m spacy download en_core_web_md
 
 # Crear directorios necesarios
 RUN mkdir -p /app/dataset/raw /app/dataset/gold /app/dataset/processed /app/logs

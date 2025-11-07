@@ -1,0 +1,33 @@
+name: api_rest
+description: REST API connector
+version: 1.0.0
+
+required_fields:
+  - endpoint
+  - method
+
+optional_fields:
+  - headers
+  - params
+  - auth_type
+  - api_key
+
+field_types:
+  endpoint: string
+  method: string
+  headers: object
+  params: object
+  auth_type: string
+  api_key: string
+
+defaults:
+  method: "GET"
+  auth_type: "none"
+
+validation_rules:
+  method:
+    - type: string
+    - allowed_values: ["GET", "POST"]
+  auth_type:
+    - type: string
+    - allowed_values: ["none", "bearer", "api_key"]

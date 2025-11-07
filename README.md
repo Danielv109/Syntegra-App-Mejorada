@@ -7,13 +7,46 @@ SYNTEGRA es una plataforma completa de inteligencia de datos empresariales que f
 ## ✨ Características Principales
 
 - **ETL Automatizado**: Ingesta y limpieza de datos estructurados (CSV, Excel, JSON)
+- **Data Connectors**: Sistema de conectores para fuentes externas
+- **Data Processing**: Limpieza y normalización automática de datos
 - **Análisis de Texto con IA Local**: Análisis de sentimiento y extracción de keywords usando Ollama
 - **Detección de Tendencias**: Identificación automática de patrones emergentes
+- **Detección de Anomalías**: Usando IsolationForest de scikit-learn
 - **Clustering de Clientes**: Agrupación inteligente de empresas similares
 - **Generación de Reportes**: Informes PDF automáticos con métricas clave
 - **Gold Dataset**: Sistema de aprendizaje continuo con correcciones humanas
 - **Multi-tenant**: Soporte para múltiples clientes con aislamiento de datos
 - **Procesamiento Asíncrono**: Workers con Celery para tareas pesadas
+
+## 📊 Módulos Principales
+
+### 1. Data Connectors
+
+- Configuración de fuentes de datos externas
+- Validación basada en templates YAML
+- Ejecución asíncrona de ingestas
+- Historial completo de operaciones
+
+### 2. Data Processing
+
+- Limpieza automática de texto (HTML, emojis, caracteres especiales)
+- Normalización de fechas (múltiples formatos)
+- Normalizadores específicos por tipo (restaurant, retail, service)
+- Almacenamiento en tabla `processed_data`
+
+### 3. Text Analysis
+
+- Análisis de sentimiento con Ollama (IA local)
+- Extracción de keywords con spaCy
+- Generación de embeddings
+- Detección de entidades
+
+### 4. Anomaly Detection
+
+- IsolationForest (método principal)
+- EllipticEnvelope (multivariado)
+- LocalOutlierFactor (densidad local)
+- Ensemble de métodos
 
 ## 🛠️ Stack Tecnológico
 
@@ -91,6 +124,11 @@ Una vez iniciada la aplicación, visita:
 - **Swagger UI**: http://localhost:8000/docs
 - **ReDoc**: http://localhost:8000/redoc
 
+### Documentación Detallada
+
+- [Data Connectors](DOCS/CONNECTORS.md)
+- [Data Processing](DOCS/DATA_PROCESSING.md)
+
 ## 🔐 Autenticación
 
 ### Login
@@ -164,14 +202,44 @@ curl -X POST http://localhost:8000/reports/generate \
 ## 🧪 Testing
 
 ```bash
-# Instalar dependencias de desarrollo
-pip install pytest pytest-asyncio httpx
-
-# Ejecutar tests
+# Todos los tests
 pytest
 
+# Tests por módulo
+make test-connectors
+make test-processing
+
 # Con coverage
-pytest --cov=app tests/
+make test-processing-coverage
+
+# Demos interactivos
+make demo-processing
 ```
 
 ## 📁 Estructura del Proyecto
+
+```bash
+app/
+├── api.py               # Archivo principal de la API
+├── models.py            # Modelos de datos y esquemas Pydantic
+├── services.py         # Lógica de negocio y servicios
+├── tasks.py             # Tareas de Celery
+├── connectors/          # Módulo de Data Connectors
+│   ├── __init__.py
+│   ├── models.py        # Modelos específicos de conectores
+│   ├── schemas.py       # Esquemas Pydantic para validación
+│   └── tasks.py         # Tareas de ingesta y conexión
+├── processing/          # Módulo de Data Processing
+│   ├── __init__.py
+│   ├── models.py        # Modelos para procesamiento de datos
+│   ├── schemas.py       # Esquemas Pydantic para validación
+│   └── tasks.py         # Tareas de procesamiento y normalización
+├── analysis/            # Módulo de Análisis de Datos
+│   ├── __init__.py
+│   ├── models.py        # Modelos para análisis de datos
+│   ├── schemas.py       # Esquemas Pydantic para validación
+│   └── tasks.py         # Tareas de análisis y generación de reportes
+├── db.py                # Configuración de la base de datos y modelos SQLAlchemy
+├── main.py              # Punto de entrada de la aplicación
+└── settings.py          # Configuración general de la aplicación
+```

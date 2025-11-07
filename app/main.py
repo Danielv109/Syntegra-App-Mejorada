@@ -10,7 +10,7 @@ from app.middleware.logging import ActivityLogMiddleware
 from app.middleware.rate_limit import RateLimitMiddleware
 
 # Routers
-from app.routers import auth, datasets, analysis, reports, gold_dataset, clustering
+from app.routers import auth, datasets, analysis, reports, gold_dataset, clustering, connectors
 
 settings = get_settings()
 logger = get_logger()
@@ -94,6 +94,7 @@ app.include_router(analysis.router)
 app.include_router(reports.router)
 app.include_router(gold_dataset.router)
 app.include_router(clustering.router)
+app.include_router(connectors.router)
 
 
 if __name__ == "__main__":

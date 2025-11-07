@@ -34,8 +34,33 @@ clean:
 test:
 	docker-compose exec api pytest
 
+test-connectors:
+	docker-compose exec api pytest tests/test_connectors.py -v
+
+test-ingest:
+	bash scripts/test_ingest_connector.sh
+
 init-admin:
 	docker-compose exec api python scripts/init_admin.py
 
 sample-data:
 	docker-compose exec api python scripts/create_sample_data.py
+
+test-processing:
+	docker-compose exec api pytest tests/test_data_processing.py -v
+
+test-processing-coverage:
+	docker-compose exec api pytest tests/test_data_processing.py --cov=app.data_processing --cov-report=html
+
+demo-processing:
+	docker-compose exec api python scripts/test_data_processing.py
+
+# Migrations
+migrate-003:
+	bash scripts/run_migration_003.sh
+
+rollback-003:
+	bash scripts/rollback_migration_003.sh
+
+verify-analytics-tables:
+	docker-compose exec postgres psql -U $(POSTGRES_USER) -d $(POSTGRES_DB) -f /scripts/verify_analytics_tables.sql
